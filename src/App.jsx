@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { storage } from "./lib/storage";
+import { supabase } from "./lib/supabaseClient";
+import AuthScreen from "./AuthScreen";
+import * as db from "./lib/db";
 import {
   Wallet, Briefcase, PlusCircle, Home, UtensilsCrossed, Car, Zap,
   Film, HeartPulse, MoreHorizontal, ChevronLeft, ChevronRight, Plus,
   X, Check, Trash2, TrendingUp, TrendingDown, ClipboardList,
-  CalendarClock, Loader2, PiggyBank, Target, ArrowDownCircle, ArrowUpCircle
+  CalendarClock, Loader2, PiggyBank, Target, ArrowDownCircle, ArrowUpCircle, LogOut
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, Tooltip, CartesianGrid
@@ -159,6 +161,7 @@ function CurrentLogo({ size = 28 }) {
 }
 
 export default function FinanzasApp() {
+  const [session, setSession] = useState(undefined); // undefined = verificando, null = sin sesión
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState("");
   const [transactions, setTransactions] = useState([]);
@@ -171,56 +174,42 @@ export default function FinanzasApp() {
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [contribGoal, setContribGoal] = useState(null);
 
+  // Sesión de Supabase Auth
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const userId = session?.user?.id;
+
+  // Carga de datos del usuario autenticado
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    setLoading(true);
     (async () => {
       try {
-        let tx = [], pd = [], gl = [];
-        try {
-          const r = await storage.get("finanzas:transacciones");
-          if (r?.value) tx = JSON.parse(r.value);
-        } catch (e) {}
-        try {
-          const r2 = await storage.get("finanzas:pagos-pendientes");
-          if (r2?.value) pd = JSON.parse(r2.value);
-        } catch (e) {}
-        try {
-          const r3 = await storage.get("finanzas:ahorros");
-          if (r3?.value) gl = JSON.parse(r3.value);
-        } catch (e) {}
-        setTransactions(Array.isArray(tx) ? tx : []);
-        setPending(Array.isArray(pd) ? pd : []);
-        setGoals(Array.isArray(gl) ? gl : []);
+        const [tx, pd, gl] = await Promise.all([
+          db.fetchTransactions(userId),
+          db.fetchPending(userId),
+          db.fetchGoals(userId),
+        ]);
+        if (cancelled) return;
+        setTransactions(tx);
+        setPending(pd);
+        setGoals(gl);
+        setSaveError("");
       } catch (e) {
-        setSaveError("No se pudo cargar la información guardada.");
+        if (!cancelled) setSaveError("No se pudo cargar tu información desde la base de datos.");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [userId]);
 
-  const persistTx = useCallback(async (next) => {
-    setTransactions(next);
-    try {
-      const res = await storage.set("finanzas:transacciones", JSON.stringify(next));
-      setSaveError(res ? "" : "No se pudo guardar el movimiento.");
-    } catch (e) { setSaveError("No se pudo guardar el movimiento."); }
-  }, []);
-
-  const persistPending = useCallback(async (next) => {
-    setPending(next);
-    try {
-      const res = await storage.set("finanzas:pagos-pendientes", JSON.stringify(next));
-      setSaveError(res ? "" : "No se pudo guardar el pago.");
-    } catch (e) { setSaveError("No se pudo guardar el pago."); }
-  }, []);
-
-  const persistGoals = useCallback(async (next) => {
-    setGoals(next);
-    try {
-      const res = await storage.set("finanzas:ahorros", JSON.stringify(next));
-      setSaveError(res ? "" : "No se pudo guardar la meta de ahorro.");
-    } catch (e) { setSaveError("No se pudo guardar la meta de ahorro."); }
-  }, []);
+  const signOut = () => supabase.auth.signOut();
 
   const monthTx = useMemo(
     () => transactions.filter(t => monthKeyOf(t.date) === monthKey).sort((a, b) => b.date.localeCompare(a.date)),
@@ -271,74 +260,132 @@ export default function FinanzasApp() {
     });
   }, [transactions, monthKey]);
 
-  const addTransaction = (data) => { persistTx([...transactions, { id: uid(), ...data }]); setShowForm(false); };
-  const removeTransaction = (id) => persistTx(transactions.filter(t => t.id !== id));
-  const addPending = (data) => {
+  const addTransaction = async (data) => {
+    try {
+      const row = await db.insertTransaction(userId, data);
+      setTransactions(prev => [row, ...prev]);
+      setSaveError("");
+      setShowForm(false);
+    } catch (e) { setSaveError("No se pudo guardar el movimiento."); }
+  };
+  const removeTransaction = async (id) => {
+    try {
+      await db.deleteTransaction(id);
+      setTransactions(prev => prev.filter(t => t.id !== id));
+      setSaveError("");
+    } catch (e) { setSaveError("No se pudo eliminar el movimiento."); }
+  };
+  const addPending = async (data) => {
     const base = data.recurring ? { paidMonths: {} } : { paid: false, paidTxId: null };
-    persistPending([...pending, { id: uid(), ...base, ...data }]);
-    setShowPendingForm(false);
+    try {
+      const row = await db.insertPending(userId, { ...base, ...data });
+      setPending(prev => [...prev, row]);
+      setSaveError("");
+      setShowPendingForm(false);
+    } catch (e) { setSaveError("No se pudo guardar el pago."); }
   };
-  const removePending = (id) => {
+  const removePending = async (id) => {
     const item = pending.find(p => p.id === id);
-    let nextTx = transactions;
-    if (item?.recurring && item.paidMonths) {
-      const txIds = Object.values(item.paidMonths).filter(Boolean);
-      nextTx = transactions.filter(t => !txIds.includes(t.id));
-    } else if (item && !item.recurring && item.paidTxId) {
-      nextTx = transactions.filter(t => t.id !== item.paidTxId);
-    }
-    persistPending(pending.filter(p => p.id !== id));
-    if (nextTx !== transactions) persistTx(nextTx);
+    try {
+      if (item?.recurring && item.paidMonths) {
+        const txIds = Object.values(item.paidMonths).filter(Boolean);
+        await Promise.all(txIds.map(txId => db.deleteTransaction(txId)));
+        setTransactions(prev => prev.filter(t => !txIds.includes(t.id)));
+      } else if (item && !item.recurring && item.paidTxId) {
+        await db.deleteTransaction(item.paidTxId);
+        setTransactions(prev => prev.filter(t => t.id !== item.paidTxId));
+      }
+      await db.deletePending(id);
+      setPending(prev => prev.filter(p => p.id !== id));
+      setSaveError("");
+    } catch (e) { setSaveError("No se pudo eliminar el pago."); }
   };
-  const togglePaid = (id) => {
+  const togglePaid = async (id) => {
     const item = pending.find(p => p.id === id);
     if (!item) return;
-    if (item.recurring) {
-      const isPaid = !!item.paidMonths?.[monthKey];
-      if (isPaid) {
-        const txId = item.paidMonths[monthKey];
-        persistTx(transactions.filter(t => t.id !== txId));
-        const nextPaidMonths = { ...item.paidMonths };
-        delete nextPaidMonths[monthKey];
-        persistPending(pending.map(p => p.id === id ? { ...p, paidMonths: nextPaidMonths } : p));
+    try {
+      if (item.recurring) {
+        const isPaid = !!item.paidMonths?.[monthKey];
+        if (isPaid) {
+          const txId = item.paidMonths[monthKey];
+          await db.deleteTransaction(txId);
+          setTransactions(prev => prev.filter(t => t.id !== txId));
+          const nextPaidMonths = { ...item.paidMonths };
+          delete nextPaidMonths[monthKey];
+          const updated = await db.updatePending(id, { paidMonths: nextPaidMonths });
+          setPending(prev => prev.map(p => p.id === id ? updated : p));
+        } else {
+          const newTx = await db.insertTransaction(userId, { type: "egreso", description: item.description, category: "pago_fijo", amount: Number(item.amount), date: `${monthKey}-${String(item.dueDay || 1).padStart(2, "0")}` });
+          setTransactions(prev => [newTx, ...prev]);
+          const updated = await db.updatePending(id, { paidMonths: { ...item.paidMonths, [monthKey]: newTx.id } });
+          setPending(prev => prev.map(p => p.id === id ? updated : p));
+        }
       } else {
-        const newTxId = uid();
-        const newTx = { id: newTxId, type: "egreso", description: item.description, category: "pago_fijo", amount: Number(item.amount), date: `${monthKey}-${String(item.dueDay || 1).padStart(2, "0")}` };
-        persistTx([...transactions, newTx]);
-        persistPending(pending.map(p => p.id === id ? { ...p, paidMonths: { ...p.paidMonths, [monthKey]: newTxId } } : p));
+        if (item.paid) {
+          await db.deleteTransaction(item.paidTxId);
+          setTransactions(prev => prev.filter(t => t.id !== item.paidTxId));
+          const updated = await db.updatePending(id, { paid: false, paidTxId: null });
+          setPending(prev => prev.map(p => p.id === id ? updated : p));
+        } else {
+          const newTx = await db.insertTransaction(userId, { type: "egreso", description: item.description, category: "pago_fijo", amount: Number(item.amount), date: item.dueDate || todayISO() });
+          setTransactions(prev => [newTx, ...prev]);
+          const updated = await db.updatePending(id, { paid: true, paidTxId: newTx.id });
+          setPending(prev => prev.map(p => p.id === id ? updated : p));
+        }
       }
-    } else {
-      if (item.paid) {
-        persistTx(transactions.filter(t => t.id !== item.paidTxId));
-        persistPending(pending.map(p => p.id === id ? { ...p, paid: false, paidTxId: null } : p));
-      } else {
-        const newTxId = uid();
-        const newTx = { id: newTxId, type: "egreso", description: item.description, category: "pago_fijo", amount: Number(item.amount), date: item.dueDate || todayISO() };
-        persistTx([...transactions, newTx]);
-        persistPending(pending.map(p => p.id === id ? { ...p, paid: true, paidTxId: newTxId } : p));
-      }
-    }
+      setSaveError("");
+    } catch (e) { setSaveError("No se pudo actualizar el pago."); }
   };
-  const addGoal = (data) => { persistGoals([...goals, { id: uid(), currentAmount: 0, ...data }]); setShowGoalForm(false); };
-  const removeGoal = (id) => persistGoals(goals.filter(g => g.id !== id));
-  const contributeToGoal = (goalId, mode, amount) => {
+  const addGoal = async (data) => {
+    try {
+      const row = await db.insertGoal(userId, { currentAmount: 0, ...data });
+      setGoals(prev => [...prev, row]);
+      setSaveError("");
+      setShowGoalForm(false);
+    } catch (e) { setSaveError("No se pudo crear la meta de ahorro."); }
+  };
+  const removeGoal = async (id) => {
+    try {
+      await db.deleteGoal(id);
+      setGoals(prev => prev.filter(g => g.id !== id));
+      setSaveError("");
+    } catch (e) { setSaveError("No se pudo eliminar la meta de ahorro."); }
+  };
+  const contributeToGoal = async (goalId, mode, amount) => {
     const value = Number(amount);
     if (!value || value <= 0) return;
     const goal = goals.find(g => g.id === goalId);
     if (!goal) return;
     const delta = mode === "aporte" ? value : -value;
-    persistGoals(goals.map(g => g.id === goalId ? { ...g, currentAmount: Math.max(0, Number(g.currentAmount || 0) + delta) } : g));
-    const newTx = {
-      id: uid(),
-      type: mode === "aporte" ? "egreso" : "ingreso",
-      category: mode === "aporte" ? "ahorro" : "otro_ingreso",
-      description: `${mode === "aporte" ? "Aporte a" : "Retiro de"} ahorro: ${goal.name}`,
-      amount: value,
-      date: todayISO(),
-    };
-    persistTx([...transactions, newTx]);
-    setContribGoal(null);
+    const nextAmount = Math.max(0, Number(goal.currentAmount || 0) + delta);
+    try {
+      const updatedGoal = await db.updateGoalAmount(goalId, nextAmount);
+      setGoals(prev => prev.map(g => g.id === goalId ? updatedGoal : g));
+      const newTx = await db.insertTransaction(userId, {
+        type: mode === "aporte" ? "egreso" : "ingreso",
+        category: mode === "aporte" ? "ahorro" : "otro_ingreso",
+        description: `${mode === "aporte" ? "Aporte a" : "Retiro de"} ahorro: ${goal.name}`,
+        amount: value,
+        date: todayISO(),
+      });
+      setTransactions(prev => [newTx, ...prev]);
+      setSaveError("");
+      setContribGoal(null);
+    } catch (e) { setSaveError("No se pudo registrar el aporte."); }
   };
+
+  if (session === undefined) {
+    return (
+      <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Loader2 size={28} color={COLORS.gold} className="spin" />
+        <style>{`.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    );
+  }
+
+  if (session === null) {
+    return <AuthScreen logo={<CurrentLogo size={40} />} />;
+  }
 
   if (loading) {
     return (
@@ -368,10 +415,16 @@ export default function FinanzasApp() {
 
       {/* Encabezado */}
       <header style={{ padding: "26px 18px 4px", maxWidth: 720, margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 18 }}>
-          <CurrentLogo size={24} />
-          <span className="disp" style={{ color: COLORS.text, fontSize: 15, fontWeight: 700, letterSpacing: "0.01em" }}>Current</span>
-          <span style={{ color: COLORS.textFaint, fontSize: 12 }}>· Finanzas personales</span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <CurrentLogo size={24} />
+            <span className="disp" style={{ color: COLORS.text, fontSize: 15, fontWeight: 700, letterSpacing: "0.01em" }}>Current</span>
+            <span style={{ color: COLORS.textFaint, fontSize: 12 }}>· Finanzas personales</span>
+          </div>
+          <button onClick={signOut} title={session?.user?.email} aria-label="Cerrar sesión"
+            style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "none", color: COLORS.textFaint, fontSize: 11.5, padding: 4 }}>
+            <LogOut size={13} /> Salir
+          </button>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <button onClick={() => setMonthKey(shiftMonth(monthKey, -1))} aria-label="Mes anterior"
