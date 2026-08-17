@@ -917,7 +917,7 @@ function GoalForm({ onCancel, onSubmit }) {
   const submit = () => {
     const value = parseFloat(targetAmount);
     if (!name.trim() || !value || value <= 0) return;
-    onSubmit({ name: name.trim(), targetAmount: value, targetDate: targetDate || null });
+    onSubmit({ name: name.trim(), targetAmount: value, targetDate: targetDate ? `${targetDate}-01` : null });
   };
 
   return (
