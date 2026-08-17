@@ -11,6 +11,10 @@ const C = {
   textFaint: "#65656F",
 };
 
+// URL fija de producción — evita que el login te devuelva a una URL vieja
+// (accesos directos, favoritos o iconos instalados que apunten a un despliegue anterior).
+const CANONICAL_URL = "https://current-app-eight.vercel.app";
+
 export default function AuthScreen({ logo }) {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -21,7 +25,7 @@ export default function AuthScreen({ logo }) {
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: window.location.origin },
+        options: { redirectTo: CANONICAL_URL },
       });
       if (error) throw error;
       // Si tiene éxito, el navegador redirige a Google — no hay más que hacer aquí.
