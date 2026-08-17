@@ -6,8 +6,10 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
-      includeAssets: ["logo.svg"],
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.js",
+      injectRegister: "auto",
       manifest: {
         name: "Current — Finanzas personales",
         short_name: "Current",
@@ -24,12 +26,10 @@ export default defineConfig({
           { src: "/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
-      workbox: {
-        // La app necesita red para hablar con Supabase; el service worker solo
-        // cachea los archivos estáticos (JS/CSS/íconos) para que abra al instante.
+      injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,png,ico}"],
-        navigateFallback: "/index.html",
       },
+      devOptions: { enabled: false },
     }),
   ],
 });

@@ -2,11 +2,12 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { supabase } from "./lib/supabaseClient";
 import AuthScreen from "./AuthScreen";
 import * as db from "./lib/db";
+import { isPushSupported, getCurrentPushSubscription, subscribeToPush, unsubscribeFromPush } from "./lib/push";
 import {
   Wallet, Briefcase, PlusCircle, Home, UtensilsCrossed, Car, Zap,
   Film, HeartPulse, MoreHorizontal, ChevronLeft, ChevronRight, Plus,
   X, Check, Trash2, TrendingUp, TrendingDown, ClipboardList,
-  CalendarClock, Loader2, PiggyBank, Target, ArrowDownCircle, ArrowUpCircle, LogOut
+  CalendarClock, Loader2, PiggyBank, Target, ArrowDownCircle, ArrowUpCircle, LogOut, Bell, BellOff
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, Tooltip, CartesianGrid
@@ -210,6 +211,33 @@ export default function FinanzasApp() {
   }, [userId]);
 
   const signOut = () => supabase.auth.signOut();
+
+  // Notificaciones push
+  const [notifStatus, setNotifStatus] = useState("off"); // off | on | unsupported
+  useEffect(() => {
+    if (!userId) return;
+    if (!isPushSupported()) { setNotifStatus("unsupported"); return; }
+    getCurrentPushSubscription().then(sub => setNotifStatus(sub ? "on" : "off")).catch(() => setNotifStatus("off"));
+  }, [userId]);
+
+  const handleToggleNotifications = async () => {
+    if (notifStatus === "unsupported") {
+      setSaveError("Este navegador no soporta notificaciones push (prueba con Chrome o Safari en tu celular, con la app instalada).");
+      return;
+    }
+    try {
+      if (notifStatus === "on") {
+        await unsubscribeFromPush();
+        setNotifStatus("off");
+      } else {
+        await subscribeToPush(userId);
+        setNotifStatus("on");
+      }
+      setSaveError("");
+    } catch (e) {
+      setSaveError(e?.message || "No se pudieron activar las notificaciones.");
+    }
+  };
 
   const monthTx = useMemo(
     () => transactions.filter(t => monthKeyOf(t.date) === monthKey).sort((a, b) => b.date.localeCompare(a.date)),
@@ -421,10 +449,16 @@ export default function FinanzasApp() {
             <span className="disp" style={{ color: COLORS.text, fontSize: 15, fontWeight: 700, letterSpacing: "0.01em" }}>Current</span>
             <span style={{ color: COLORS.textFaint, fontSize: 12 }}>· Finanzas personales</span>
           </div>
-          <button onClick={signOut} title={session?.user?.email} aria-label="Cerrar sesión"
-            style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "none", color: COLORS.textFaint, fontSize: 11.5, padding: 4 }}>
-            <LogOut size={13} /> Salir
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <button onClick={handleToggleNotifications} title={notifStatus === "on" ? "Notificaciones activadas" : "Activar notificaciones de pagos"}
+              aria-label="Notificaciones" style={{ display: "flex", alignItems: "center", background: "transparent", border: "none", color: notifStatus === "on" ? COLORS.gold : COLORS.textFaint, padding: 4 }}>
+              {notifStatus === "on" ? <Bell size={15} /> : <BellOff size={15} />}
+            </button>
+            <button onClick={signOut} title={session?.user?.email} aria-label="Cerrar sesión"
+              style={{ display: "flex", alignItems: "center", gap: 5, background: "transparent", border: "none", color: COLORS.textFaint, fontSize: 11.5, padding: 4 }}>
+              <LogOut size={13} /> Salir
+            </button>
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <button onClick={() => setMonthKey(shiftMonth(monthKey, -1))} aria-label="Mes anterior"
