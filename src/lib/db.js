@@ -10,6 +10,7 @@ function rowToTx(row) {
     description: row.description || "",
     amount: Number(row.amount),
     date: row.date,
+    goalId: row.goal_id || null,
   };
 }
 function txToRow(userId, tx) {
@@ -20,6 +21,7 @@ function txToRow(userId, tx) {
     description: tx.description || "",
     amount: tx.amount,
     date: tx.date,
+    goal_id: tx.goalId ?? null,
   };
 }
 
@@ -91,6 +93,23 @@ export async function insertTransaction(userId, tx) {
   return rowToTx(data);
 }
 
+export async function updateTransaction(id, tx) {
+  const { data, error } = await supabase
+    .from("transactions")
+    .update({
+      type: tx.type,
+      category: tx.category,
+      description: tx.description || "",
+      amount: tx.amount,
+      date: tx.date,
+    })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToTx(data);
+}
+
 export async function deleteTransaction(id) {
   const { error } = await supabase.from("transactions").delete().eq("id", id);
   if (error) throw error;
@@ -126,6 +145,23 @@ export async function updatePending(id, patch) {
   const { data, error } = await supabase
     .from("pending_payments")
     .update(row)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return rowToPending(data);
+}
+
+export async function updatePendingDetails(id, p) {
+  const { data, error } = await supabase
+    .from("pending_payments")
+    .update({
+      description: p.description,
+      amount: p.amount,
+      recurring: p.recurring,
+      due_day: p.dueDay ?? null,
+      due_date: p.dueDate ?? null,
+    })
     .eq("id", id)
     .select()
     .single();

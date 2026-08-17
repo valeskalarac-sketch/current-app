@@ -7,7 +7,7 @@ import {
   Wallet, Briefcase, PlusCircle, Home, UtensilsCrossed, Car, Zap,
   Film, HeartPulse, MoreHorizontal, ChevronLeft, ChevronRight, Plus,
   X, Check, Trash2, TrendingUp, TrendingDown, ClipboardList,
-  CalendarClock, Loader2, PiggyBank, Target, ArrowDownCircle, ArrowUpCircle, LogOut, Bell, BellOff
+  CalendarClock, Loader2, PiggyBank, Target, ArrowDownCircle, ArrowUpCircle, LogOut, Bell, BellOff, Pencil, AlertTriangle
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, Tooltip, CartesianGrid
@@ -174,6 +174,9 @@ export default function FinanzasApp() {
   const [showPendingForm, setShowPendingForm] = useState(false);
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [contribGoal, setContribGoal] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null); // { message, onConfirm }
+  const [editingTx, setEditingTx] = useState(null); // transacción siendo editada, o null
+  const [editingPending, setEditingPending] = useState(null); // pago siendo editado, o null
 
   // Sesión de Supabase Auth
   useEffect(() => {
@@ -217,7 +220,13 @@ export default function FinanzasApp() {
     return () => { cancelled = true; };
   }, [userId]);
 
-  const signOut = () => supabase.auth.signOut();
+  const signOut = () => {
+    setConfirmAction({
+      message: "¿Estás segura de que quieres salir de tu cuenta?",
+      confirmLabel: "Sí, salir",
+      onConfirm: () => supabase.auth.signOut(),
+    });
+  };
 
   // Notificaciones push
   const [notifStatus, setNotifStatus] = useState("off"); // off | on | unsupported
@@ -295,21 +304,57 @@ export default function FinanzasApp() {
     });
   }, [transactions, monthKey]);
 
+  // Cuánto afecta una transacción a la meta vinculada: aporte suma, retiro resta
+  const goalDelta = (tx) => {
+    if (!tx.goalId) return 0;
+    return tx.type === "egreso" ? Number(tx.amount) : -Number(tx.amount);
+  };
+  const adjustGoalAmount = async (goalId, delta) => {
+    if (!goalId || !delta) return;
+    const goal = goals.find(g => g.id === goalId);
+    if (!goal) return;
+    const nextAmount = Math.max(0, Number(goal.currentAmount || 0) + delta);
+    const updated = await db.updateGoalAmount(goalId, nextAmount);
+    setGoals(prev => prev.map(g => g.id === goalId ? updated : g));
+  };
+
   const addTransaction = async (data) => {
     try {
       const row = await db.insertTransaction(userId, data);
       setTransactions(prev => [row, ...prev]);
+      await adjustGoalAmount(row.goalId, goalDelta(row));
       setSaveError("");
       setShowForm(false);
     } catch (e) { setSaveError("No se pudo guardar el movimiento."); }
   };
-  const removeTransaction = async (id) => {
+  const saveEditedTransaction = async (id, data) => {
+    const original = transactions.find(t => t.id === id);
+    try {
+      const row = await db.updateTransaction(id, data);
+      setTransactions(prev => prev.map(t => t.id === id ? row : t));
+      // Revierte el efecto de la meta anterior (si tenía) y aplica el nuevo
+      if (original) await adjustGoalAmount(original.goalId, -goalDelta(original));
+      await adjustGoalAmount(row.goalId, goalDelta(row));
+      setSaveError("");
+      setEditingTx(null);
+    } catch (e) { setSaveError("No se pudo actualizar el movimiento."); }
+  };
+  const performRemoveTransaction = async (id) => {
+    const original = transactions.find(t => t.id === id);
     try {
       await db.deleteTransaction(id);
       setTransactions(prev => prev.filter(t => t.id !== id));
+      if (original) await adjustGoalAmount(original.goalId, -goalDelta(original));
       setSaveError("");
     } catch (e) { setSaveError("No se pudo eliminar el movimiento."); }
   };
+  const removeTransaction = (id) => {
+    setConfirmAction({
+      message: "¿Estás segura de que quieres eliminar este movimiento?",
+      onConfirm: () => performRemoveTransaction(id),
+    });
+  };
+
   const addPending = async (data) => {
     const base = data.recurring ? { paidMonths: {} } : { paid: false, paidTxId: null };
     try {
@@ -319,7 +364,15 @@ export default function FinanzasApp() {
       setShowPendingForm(false);
     } catch (e) { setSaveError("No se pudo guardar el pago."); }
   };
-  const removePending = async (id) => {
+  const saveEditedPending = async (id, data) => {
+    try {
+      const row = await db.updatePendingDetails(id, data);
+      setPending(prev => prev.map(p => p.id === id ? { ...p, ...row } : p));
+      setSaveError("");
+      setEditingPending(null);
+    } catch (e) { setSaveError("No se pudo actualizar el pago."); }
+  };
+  const performRemovePending = async (id) => {
     const item = pending.find(p => p.id === id);
     try {
       if (item?.recurring && item.paidMonths) {
@@ -335,6 +388,13 @@ export default function FinanzasApp() {
       setSaveError("");
     } catch (e) { setSaveError("No se pudo eliminar el pago."); }
   };
+  const removePending = (id) => {
+    setConfirmAction({
+      message: "¿Estás segura de que quieres eliminar este pago?",
+      onConfirm: () => performRemovePending(id),
+    });
+  };
+
   const togglePaid = async (id) => {
     const item = pending.find(p => p.id === id);
     if (!item) return;
@@ -379,12 +439,18 @@ export default function FinanzasApp() {
       setShowGoalForm(false);
     } catch (e) { setSaveError("No se pudo crear la meta de ahorro."); }
   };
-  const removeGoal = async (id) => {
+  const performRemoveGoal = async (id) => {
     try {
       await db.deleteGoal(id);
       setGoals(prev => prev.filter(g => g.id !== id));
       setSaveError("");
     } catch (e) { setSaveError("No se pudo eliminar la meta de ahorro."); }
+  };
+  const removeGoal = (id) => {
+    setConfirmAction({
+      message: "¿Estás segura de que quieres eliminar esta meta de ahorro? Los movimientos ya registrados no se borran.",
+      onConfirm: () => performRemoveGoal(id),
+    });
   };
   const contributeToGoal = async (goalId, mode, amount) => {
     const value = Number(amount);
@@ -402,6 +468,7 @@ export default function FinanzasApp() {
         description: `${mode === "aporte" ? "Aporte a" : "Retiro de"} ahorro: ${goal.name}`,
         amount: value,
         date: todayISO(),
+        goalId,
       });
       setTransactions(prev => [newTx, ...prev]);
       setSaveError("");
@@ -541,10 +608,10 @@ export default function FinanzasApp() {
           <ResumenTab chartData={chartData} totalPendiente={totalPendiente} totalAhorrado={totalAhorrado} categoryBreakdown={categoryBreakdown} />
         )}
         {tab === "movimientos" && (
-          <MovimientosTab monthTx={monthTx} onRemove={removeTransaction} onAdd={() => setShowForm(true)} />
+          <MovimientosTab monthTx={monthTx} onRemove={removeTransaction} onEdit={(tx) => setEditingTx(tx)} onAdd={() => setShowForm(true)} />
         )}
         {tab === "pagos" && (
-          <PagosTab items={pendingForMonth} onToggle={togglePaid} onRemove={removePending} onAdd={() => setShowPendingForm(true)} totalPendiente={totalPendiente} />
+          <PagosTab items={pendingForMonth} onToggle={togglePaid} onRemove={removePending} onEdit={(p) => setEditingPending(p)} onAdd={() => setShowPendingForm(true)} totalPendiente={totalPendiente} />
         )}
         {tab === "ahorro" && (
           <AhorroTab goals={goals} monthKey={monthKey} onAdd={() => setShowGoalForm(true)} onRemove={removeGoal} onContribute={(goal, mode) => setContribGoal({ goal, mode })} />
@@ -552,12 +619,26 @@ export default function FinanzasApp() {
       </main>
 
       {showForm && (
-        <TransactionForm defaultDate={monthKey === todayISO().slice(0,7) ? todayISO() : `${monthKey}-01`} onCancel={() => setShowForm(false)} onSubmit={addTransaction} />
+        <TransactionForm goals={goals} defaultDate={monthKey === todayISO().slice(0,7) ? todayISO() : `${monthKey}-01`} onCancel={() => setShowForm(false)} onSubmit={addTransaction} />
+      )}
+      {editingTx && (
+        <TransactionForm goals={goals} initial={editingTx} onCancel={() => setEditingTx(null)} onSubmit={(data) => saveEditedTransaction(editingTx.id, data)} />
       )}
       {showPendingForm && <PendingForm onCancel={() => setShowPendingForm(false)} onSubmit={addPending} />}
+      {editingPending && (
+        <PendingForm initial={editingPending} onCancel={() => setEditingPending(null)} onSubmit={(data) => saveEditedPending(editingPending.id, data)} />
+      )}
       {showGoalForm && <GoalForm onCancel={() => setShowGoalForm(false)} onSubmit={addGoal} />}
       {contribGoal && (
         <ContributeForm goal={contribGoal.goal} mode={contribGoal.mode} onCancel={() => setContribGoal(null)} onSubmit={(amount) => contributeToGoal(contribGoal.goal.id, contribGoal.mode, amount)} />
+      )}
+      {confirmAction && (
+        <ConfirmDialog
+          message={confirmAction.message}
+          confirmLabel={confirmAction.confirmLabel}
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={() => { confirmAction.onConfirm(); setConfirmAction(null); }}
+        />
       )}
     </div>
   );
@@ -635,7 +716,7 @@ function ResumenTab({ chartData, totalPendiente, totalAhorrado, categoryBreakdow
   );
 }
 
-function MovimientosTab({ monthTx, onRemove, onAdd }) {
+function MovimientosTab({ monthTx, onRemove, onEdit, onAdd }) {
   return (
     <div>
       <AddButton onClick={onAdd} icon={Plus} label="Registrar movimiento" />
@@ -659,6 +740,9 @@ function MovimientosTab({ monthTx, onRemove, onAdd }) {
                 <div className="amt" style={{ fontSize: 13.5, fontWeight: 600, color: isIncome ? COLORS.income : COLORS.expense, whiteSpace: "nowrap" }}>
                   {isIncome ? "+" : "−"}{fmtMoney(t.amount)}
                 </div>
+                <button onClick={() => onEdit(t)} aria-label="Editar" style={{ background: "transparent", border: "none", color: COLORS.textFaint, padding: 4 }}>
+                  <Pencil size={13} />
+                </button>
                 <button onClick={() => onRemove(t.id)} aria-label="Eliminar" style={{ background: "transparent", border: "none", color: COLORS.textFaint, padding: 4 }}>
                   <Trash2 size={14} />
                 </button>
@@ -671,7 +755,7 @@ function MovimientosTab({ monthTx, onRemove, onAdd }) {
   );
 }
 
-function PagosTab({ items, onToggle, onRemove, onAdd, totalPendiente }) {
+function PagosTab({ items, onToggle, onRemove, onEdit, onAdd, totalPendiente }) {
   return (
     <div>
       <AddButton onClick={onAdd} icon={Plus} label="Agregar pago recurrente" />
@@ -703,6 +787,9 @@ function PagosTab({ items, onToggle, onRemove, onAdd, totalPendiente }) {
                 </div>
               </div>
               <div className="amt" style={{ fontSize: 13.5, fontWeight: 600, color: p.paid ? COLORS.textFaint : COLORS.expense }}>{fmtMoney(p.amount)}</div>
+              <button onClick={() => onEdit(p)} aria-label="Editar" style={{ background: "transparent", border: "none", color: COLORS.textFaint, padding: 4 }}>
+                <Pencil size={13} />
+              </button>
               <button onClick={() => onRemove(p.id)} aria-label="Eliminar" style={{ background: "transparent", border: "none", color: COLORS.textFaint, padding: 4 }}>
                 <Trash2 size={14} />
               </button>
@@ -794,22 +881,29 @@ function EmptyState({ text }) {
   return <div style={{ textAlign: "center", padding: "34px 10px", color: COLORS.textFaint, fontSize: 13 }}>{text}</div>;
 }
 
-function TransactionForm({ onCancel, onSubmit, defaultDate }) {
-  const [type, setType] = useState("egreso");
-  const [category, setCategory] = useState(CATEGORIES.egreso[0].id);
-  const [description, setDescription] = useState("");
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(defaultDate);
+function TransactionForm({ onCancel, onSubmit, defaultDate, initial, goals = [] }) {
+  const isEdit = !!initial;
+  const [type, setType] = useState(initial?.type || "egreso");
+  const [category, setCategory] = useState(initial?.category || CATEGORIES.egreso[0].id);
+  const [description, setDescription] = useState(initial?.description || "");
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [date, setDate] = useState(initial?.date || defaultDate);
+  const [goalId, setGoalId] = useState(initial?.goalId || "");
+  const [formError, setFormError] = useState("");
 
-  const switchType = (t) => { setType(t); setCategory(CATEGORIES[t][0].id); };
+  const switchType = (t) => { setType(t); setCategory(CATEGORIES[t][0].id); if (t !== "egreso") setGoalId(""); };
   const submit = () => {
     const value = parseFloat(amount);
-    if (!value || value <= 0 || !date) return;
-    onSubmit({ type, category, description: description.trim(), amount: value, date });
+    if (!value || value <= 0) { setFormError("El monto debe ser mayor a $0."); return; }
+    if (!date) { setFormError("Elige una fecha."); return; }
+    onSubmit({
+      type, category, description: description.trim(), amount: value, date,
+      goalId: type === "egreso" && category === "ahorro" && goalId ? goalId : null,
+    });
   };
 
   return (
-    <Modal onCancel={onCancel} title="Nuevo movimiento">
+    <Modal onCancel={onCancel} title={isEdit ? "Editar movimiento" : "Nuevo movimiento"}>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {["ingreso", "egreso"].map(t => (
           <button key={t} onClick={() => switchType(t)} style={{
@@ -827,13 +921,26 @@ function TransactionForm({ onCancel, onSubmit, defaultDate }) {
         {CATEGORIES[type].map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
       </select>
 
+      {type === "egreso" && category === "ahorro" && goals.length > 0 && (
+        <>
+          <FieldLabel>Meta de ahorro (opcional)</FieldLabel>
+          <select value={goalId} onChange={e => setGoalId(e.target.value)} style={selectStyle}>
+            <option value="">Sin vincular a una meta</option>
+            {goals.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 4 }}>
+            Si eliges una meta, este monto se suma automáticamente a su progreso.
+          </div>
+        </>
+      )}
+
       <FieldLabel>Descripción (opcional)</FieldLabel>
       <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Ej. Mercado de la semana" style={inputStyle} />
 
       <div style={{ display: "flex", gap: 10 }}>
         <div style={{ flex: 1 }}>
           <FieldLabel>Monto</FieldLabel>
-          <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" style={inputStyle} />
+          <input type="number" min="0" step="0.01" value={amount} onChange={e => { setAmount(e.target.value); setFormError(""); }} placeholder="0" style={inputStyle} />
         </div>
         <div style={{ flex: 1 }}>
           <FieldLabel>Fecha</FieldLabel>
@@ -841,32 +948,36 @@ function TransactionForm({ onCancel, onSubmit, defaultDate }) {
         </div>
       </div>
 
-      <SubmitButton onClick={submit} label="Guardar movimiento" />
+      {formError && <FormError>{formError}</FormError>}
+      <SubmitButton onClick={submit} label={isEdit ? "Guardar cambios" : "Guardar movimiento"} />
     </Modal>
   );
 }
 
-function PendingForm({ onCancel, onSubmit }) {
-  const [recurring, setRecurring] = useState(true);
-  const [description, setDescription] = useState("");
-  const [amount, setAmount] = useState("");
-  const [dueDay, setDueDay] = useState("5");
-  const [dueDate, setDueDate] = useState(todayISO());
+function PendingForm({ onCancel, onSubmit, initial }) {
+  const isEdit = !!initial;
+  const [recurring, setRecurring] = useState(initial ? initial.recurring : true);
+  const [description, setDescription] = useState(initial?.description || "");
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [dueDay, setDueDay] = useState(initial?.dueDay ? String(initial.dueDay) : "5");
+  const [dueDate, setDueDate] = useState(initial?.dueDate || todayISO());
+  const [formError, setFormError] = useState("");
 
   const submit = () => {
     const value = parseFloat(amount);
-    if (!description.trim() || !value || value <= 0) return;
+    if (!description.trim()) { setFormError("Escribe una descripción."); return; }
+    if (!value || value <= 0) { setFormError("El monto debe ser mayor a $0."); return; }
     if (recurring) {
       const day = parseInt(dueDay, 10);
       onSubmit({ recurring: true, description: description.trim(), amount: value, dueDay: day >= 1 && day <= 31 ? day : 1 });
     } else {
-      if (!dueDate) return;
+      if (!dueDate) { setFormError("Elige una fecha de vencimiento."); return; }
       onSubmit({ recurring: false, description: description.trim(), amount: value, dueDate });
     }
   };
 
   return (
-    <Modal onCancel={onCancel} title="Nuevo pago">
+    <Modal onCancel={onCancel} title={isEdit ? "Editar pago" : "Nuevo pago"}>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         {[{ v: true, l: "Recurrente" }, { v: false, l: "Único" }].map(opt => (
           <button key={opt.l} onClick={() => setRecurring(opt.v)} style={{
@@ -888,7 +999,7 @@ function PendingForm({ onCancel, onSubmit }) {
       <div style={{ display: "flex", gap: 10 }}>
         <div style={{ flex: 1 }}>
           <FieldLabel>Monto</FieldLabel>
-          <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" style={inputStyle} />
+          <input type="number" min="0" step="0.01" value={amount} onChange={e => { setAmount(e.target.value); setFormError(""); }} placeholder="0" style={inputStyle} />
         </div>
         <div style={{ flex: 1 }}>
           {recurring ? (
@@ -904,7 +1015,8 @@ function PendingForm({ onCancel, onSubmit }) {
           )}
         </div>
       </div>
-      <SubmitButton onClick={submit} label="Guardar pago" />
+      {formError && <FormError>{formError}</FormError>}
+      <SubmitButton onClick={submit} label={isEdit ? "Guardar cambios" : "Guardar pago"} />
     </Modal>
   );
 }
@@ -913,10 +1025,12 @@ function GoalForm({ onCancel, onSubmit }) {
   const [name, setName] = useState("");
   const [targetAmount, setTargetAmount] = useState("");
   const [targetDate, setTargetDate] = useState("");
+  const [formError, setFormError] = useState("");
 
   const submit = () => {
     const value = parseFloat(targetAmount);
-    if (!name.trim() || !value || value <= 0) return;
+    if (!name.trim()) { setFormError("Ponle un nombre a la meta."); return; }
+    if (!value || value <= 0) { setFormError("El monto objetivo debe ser mayor a $0."); return; }
     onSubmit({ name: name.trim(), targetAmount: value, targetDate: targetDate ? `${targetDate}-01` : null });
   };
 
@@ -925,9 +1039,10 @@ function GoalForm({ onCancel, onSubmit }) {
       <FieldLabel>Nombre de la meta</FieldLabel>
       <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej. Fondo de emergencia, Viaje" style={inputStyle} />
       <FieldLabel>Monto objetivo</FieldLabel>
-      <input type="number" min="0" step="0.01" value={targetAmount} onChange={e => setTargetAmount(e.target.value)} placeholder="0" style={inputStyle} />
+      <input type="number" min="0" step="0.01" value={targetAmount} onChange={e => { setTargetAmount(e.target.value); setFormError(""); }} placeholder="0" style={inputStyle} />
       <FieldLabel>Fecha límite (opcional)</FieldLabel>
       <input type="month" value={targetDate} onChange={e => setTargetDate(e.target.value)} style={inputStyle} />
+      {formError && <FormError>{formError}</FormError>}
       <SubmitButton onClick={submit} label="Crear meta" />
     </Modal>
   );
@@ -972,11 +1087,42 @@ function Modal({ title, children, onCancel }) {
 function FieldLabel({ children }) {
   return <div style={{ fontSize: 11, color: COLORS.textFaint, marginBottom: 5, marginTop: 12, textTransform: "uppercase", letterSpacing: "0.04em" }}>{children}</div>;
 }
+function FormError({ children }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12, padding: "8px 10px", background: "rgba(244,114,182,0.12)", borderRadius: 9, color: COLORS.expense, fontSize: 12.5 }}>
+      <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+      {children}
+    </div>
+  );
+}
 function SubmitButton({ onClick, label }) {
   return (
     <button onClick={onClick} style={{ width: "100%", marginTop: 20, background: GRAD.expense, color: "#fff", border: "none", borderRadius: 12, padding: "13px 0", fontSize: 14, fontWeight: 600 }}>
       {label}
     </button>
+  );
+}
+
+function ConfirmDialog({ message, onConfirm, onCancel, confirmLabel = "Sí, eliminar" }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 20 }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 18, width: "100%", maxWidth: 360, padding: 22 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 18 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: "rgba(244,114,182,0.14)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <AlertTriangle size={17} color={COLORS.expense} />
+          </div>
+          <div style={{ fontSize: 14, color: COLORS.text, lineHeight: 1.45, paddingTop: 6 }}>{message}</div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onCancel} style={{ flex: 1, background: COLORS.surfaceAlt, color: COLORS.textDim, border: "none", borderRadius: 10, padding: "11px 0", fontSize: 13.5, fontWeight: 600 }}>
+            Cancelar
+          </button>
+          <button onClick={onConfirm} style={{ flex: 1, background: GRAD.expense, color: "#fff", border: "none", borderRadius: 10, padding: "11px 0", fontSize: 13.5, fontWeight: 600 }}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
