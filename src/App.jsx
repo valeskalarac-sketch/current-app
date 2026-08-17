@@ -183,6 +183,13 @@ export default function FinanzasApp() {
   }, []);
 
   const userId = session?.user?.id;
+  const userDisplayName = useMemo(() => {
+    const meta = session?.user?.user_metadata || {};
+    const full = meta.full_name || meta.name || "";
+    if (full) return full.split(" ")[0];
+    const email = session?.user?.email || "";
+    return email ? email.split("@")[0] : "";
+  }, [session]);
 
   // Carga de datos del usuario autenticado
   useEffect(() => {
@@ -447,7 +454,9 @@ export default function FinanzasApp() {
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
             <CurrentLogo size={24} />
             <span className="disp" style={{ color: COLORS.text, fontSize: 15, fontWeight: 700, letterSpacing: "0.01em" }}>Current</span>
-            <span style={{ color: COLORS.textFaint, fontSize: 12 }}>· Finanzas personales</span>
+            <span style={{ color: COLORS.textFaint, fontSize: 12 }}>
+              {userDisplayName ? `· Hola, ${userDisplayName} 👋` : "· Finanzas personales"}
+            </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <button onClick={handleToggleNotifications} title={notifStatus === "on" ? "Notificaciones activadas" : "Activar notificaciones de pagos"}
