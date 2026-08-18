@@ -549,7 +549,7 @@ export default function FinanzasApp() {
         </div>
       </header>
 
-      <main style={{ maxWidth: 720, margin: "0 auto", padding: "18px 14px 40px" }}>
+      <main style={{ maxWidth: 720, margin: "0 auto", padding: "18px 14px 100px" }}>
 
         {saveError && (
           <div style={{ marginBottom: 12, padding: "8px 12px", background: "rgba(244,114,182,0.12)", color: COLORS.expense, borderRadius: 10, fontSize: 13, border: `1px solid ${COLORS.expense}33` }}>
@@ -617,6 +617,22 @@ export default function FinanzasApp() {
           <AhorroTab goals={goals} monthKey={monthKey} onAdd={() => setShowGoalForm(true)} onRemove={removeGoal} onContribute={(goal, mode) => setContribGoal({ goal, mode })} />
         )}
       </main>
+
+      {/* Botón flotante — siempre visible, para registrar un movimiento desde cualquier pestaña */}
+      <button
+        onClick={() => setShowForm(true)}
+        aria-label="Registrar movimiento"
+        title="Registrar ingreso o egreso"
+        style={{
+          position: "fixed", bottom: 24, right: 20, width: 58, height: 58, borderRadius: "50%",
+          background: GRAD.expense, border: "none", color: "#fff",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 10px 28px rgba(139,92,246,0.45), 0 4px 10px rgba(0,0,0,0.35)",
+          zIndex: 40,
+        }}
+      >
+        <Plus size={26} />
+      </button>
 
       {showForm && (
         <TransactionForm goals={goals} defaultDate={monthKey === todayISO().slice(0,7) ? todayISO() : `${monthKey}-01`} onCancel={() => setShowForm(false)} onSubmit={addTransaction} />
